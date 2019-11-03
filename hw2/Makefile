@@ -6,8 +6,9 @@ hw2a: CFLAGS += -pthread
 hw2b: CC = mpicc
 hw2b: CXX = mpicxx
 hw2b: CFLAGS += -fopenmp
+test: CFLAGS += -pthread
 CXXFLAGS = $(CFLAGS)
-TARGETS = hw2seq hw2a hw2b
+TARGETS = hw2a hw2b
 
 .PHONY: all
 all: $(TARGETS)

@@ -4,3 +4,4 @@
 *.out
 *.tar
 */cases/*
+*.png
