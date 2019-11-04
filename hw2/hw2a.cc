@@ -11,12 +11,15 @@
 #include <pthread.h>
 #include <iostream>
 #include <queue>
+#include <vector>
+#include <bits/stdc++.h> 
 
 using namespace std;
 
 void write_png(const char* filename, int iters, int width, int height, const int* buffer);
 int color(double x0, double y0, int iters);
 void *working(void *data);
+bool check_all_done();
 
 struct task{
     int index;
@@ -31,10 +34,14 @@ struct task{
 };
 
 queue<task*> task_queue;
-int iters, n_thread;
+vector<task*> task_list;
+int iters, n_thread, n_task_packet, current, task_size;
 int *image;
+int *work_done;
 pthread_mutex_t task_queue_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t task_queue_cond = PTHREAD_COND_INITIALIZER;
+
+int BATCH_SIZE=500;
 
 int main(int argc, char** argv) {
     /* detect how many CPUs are available */
@@ -57,6 +64,12 @@ int main(int argc, char** argv) {
     image = (int*)malloc(width * height * sizeof(int));
     assert(image);
 
+    work_done = (int*)malloc(n_thread * sizeof(int));
+    for(int i=0; i<n_thread; i++) {
+        work_done[i] = 0;
+    }
+    current = 0;
+
     n_thread = CPU_COUNT(&cpu_set);
     pthread_t threads[n_thread];
 
@@ -67,86 +80,99 @@ int main(int argc, char** argv) {
             double x0 = i * ((right - left) / width) + left;
             int index = j * width + i;
             task *new_task = new task(index, x0, y0);
-            task_queue.push(new_task);
+            task_list.push_back(new_task);
         }
     }
+    shuffle(task_list.begin(), task_list.end(), default_random_engine(0));
+    task_size = task_list.size();
 
 
     for(int i=0; i<n_thread; i++) {
-        pthread_create(&threads[i], NULL, working, NULL);
+        pthread_create(&threads[i], NULL, working, new int(i));
         pthread_detach(threads[i]);
     }
 
-    task *new_task = NULL;
+    task *new_task1 = NULL;
+    int start=0, end=0;
     
     while(1) {
         //cout<< "busy" << endl;
         pthread_mutex_lock(&task_queue_lock);
-        if(!task_queue.empty()) {
-            new_task = task_queue.front();
-            task_queue.pop();
+        if(current < task_size) {
+            if(task_size-current > BATCH_SIZE) {
+                start = current;
+                end = current+BATCH_SIZE;
+                current += BATCH_SIZE;
+            } else {
+                start = current;
+                end = task_size;
+                current = task_size;
+            }
         }
         pthread_mutex_unlock(&task_queue_lock);
-        if(new_task != NULL) {
-            image[new_task->index] = color(new_task->x0, new_task->y0, iters);
-            delete new_task;
-            new_task = NULL;
+
+        for(int i=start; i<end; i++) {
+            new_task1 = task_list[i];
+            if(new_task1 != NULL) {
+                image[new_task1->index] = color(new_task1->x0, new_task1->y0, iters);
+                //delete new_task;
+                new_task1 = NULL;
+            }
         }
-        if(task_queue.size() == 0) {
-            cout << task_queue.size() << endl;
+
+        if(current == task_size) {
             break;
         }
     }
-    //working(NULL);
-    // for(int i=0; i<n_thread; i++) {
-    //     pthread_join(threads[i], NULL);
-    // }
+    while(!check_all_done()) {
+        //cout << "wait" << endl;
+    }
 
     /* draw and cleanup */
     write_png(filename, iters, width, height, image);
     free(image);
 }
 
-void master_working() {
-    task *new_task = NULL;
-    
-    while(1) {
-        //cout<< "busy" << endl;
-        pthread_mutex_lock(&task_queue_lock);
-        if(!task_queue.empty()) {
-            new_task = task_queue.front();
-            task_queue.pop();
-        }
-        pthread_mutex_unlock(&task_queue_lock);
-        if(new_task != NULL) {
-            image[new_task->index] = color(new_task->x0, new_task->y0, iters);
-            delete new_task;
-            new_task = NULL;
-        }
-        if(task_queue.size() == 0) {
-            cout << task_queue.size() << endl;
-            break;
-        }
+bool check_all_done() {
+    for(int i=0; i<n_thread; i++) {
+        if(work_done[i] != 1) return false;
     }
+    return true;
 }
 
-void *working(void *data) {
+void *working(void *_id) {
+    int *id = (int*) _id;
+    //cout << *id << endl;
     task *new_task = NULL;
+    int start=0, end=0;
     
     while(1) {
         //cout<< "busy" << endl;
         pthread_mutex_lock(&task_queue_lock);
-        if(!task_queue.empty()) {
-            new_task = task_queue.front();
-            task_queue.pop();
+        if(current < task_size) {
+            if(task_size-current > BATCH_SIZE) {
+                start = current;
+                end = current+BATCH_SIZE;
+                current += BATCH_SIZE;
+            } else {
+                start = current;
+                end = task_size;
+                current = task_size;
+            }
         }
         pthread_mutex_unlock(&task_queue_lock);
-        if(new_task != NULL) {
-            image[new_task->index] = color(new_task->x0, new_task->y0, iters);
-            delete new_task;
-            new_task = NULL;
+
+        for(int i=start; i<end; i++) {
+            new_task = task_list[i];
+            if(new_task != NULL) {
+                image[new_task->index] = color(new_task->x0, new_task->y0, iters);
+                //delete new_task;
+                new_task = NULL;
+            }
         }
-        if(task_queue.size() == 0) {
+
+        if(current == task_size) {
+            work_done[*id] = 1;
             pthread_exit(NULL);
             break;
         }
