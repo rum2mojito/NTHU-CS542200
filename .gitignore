@@ -3,3 +3,5 @@
 *.zst
 *.out
 *.tar
+*/cases/*
+*.png
