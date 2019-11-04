@@ -16,25 +16,116 @@ using namespace std;
 
 void write_png(const char* filename, int iters, int width, int height, const int* buffer);
 int color(double x0, double y0, int iters);
-void *working(void *data);
+//void *job(void *data1);
 
-struct task{
+#include <iostream>
+#include <queue>
+#include <pthread.h>
+#include <unistd.h>
+ 
+using namespace std;
+
+int iters = 0;
+int n_thread = 0;
+int count = 0;
+int* image;
+
+ 
+class job {
+public:
+    job(int index, double x0, double y0) {
+        this->index = index;
+        this->x0 = x0;
+        this->y0 = y0;
+    };
+    virtual ~job(){}
+    //will be overrided by specific JOB
+    void virtual working()
+    {
+        pthread_mutex_lock(&jobLock);
+        finished_jobs++;
+        pthread_mutex_unlock(&jobLock);
+        //cout << "JOB:" << index << " starts!\n";
+        int repets = color(x0, y0, iters);
+        //cout << "repeat: " << repets << endl;
+        image[index] = repets;
+    }
+
+    static int finish_num() {
+        return finished_jobs;
+    }
+    static int finished_jobs;
+    static pthread_mutex_t jobLock;
+private:
     int index;
     double x0;
     double y0;
-
-    task(int index1, double x01, double y01) {
-        index = index1;
-        x0 = x01;
-        y0 = y01;
-    }
 };
+ 
+class thread_pool {
+public:
+    static pthread_mutex_t jobQueue_lock;
+    static pthread_cond_t jobQueue_cond;
+    thread_pool(){ thread_pool(2); }
+    thread_pool(int num) : numOfThreads(num) {}
+    virtual ~thread_pool() { while(!jobQueue.empty()) jobQueue.pop(); };
+    void initThreads(pthread_t *);
+    void assignJob(job *_job_);
+    bool loadJob(job *&_job_);
+    static void *threadExecute(void *);
+private:
+    queue<job*> jobQueue;
+    int numOfThreads;
+};
+ 
+int job::finished_jobs = 0;
+ 
+pthread_mutex_t job::jobLock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t thread_pool::jobQueue_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t thread_pool::jobQueue_cond = PTHREAD_COND_INITIALIZER;
+ 
+void thread_pool::initThreads(pthread_t *threads)
+{
+     
+    for(int i = 0; i < numOfThreads; i++)
+    {
+        pthread_create(&threads[i], NULL, &thread_pool::threadExecute, (void *)this);
+        cout << "Thread:" << i << " is alive now!\n";
+    }
+}
+ 
+void thread_pool::assignJob(job* _job_)
+{
+    pthread_mutex_lock(&jobQueue_lock);
+    jobQueue.push(_job_);
+    pthread_mutex_unlock(&jobQueue_lock);
+    pthread_cond_signal(&jobQueue_cond);
+}
+ 
+bool thread_pool::loadJob(job*& _job_)
+{
+    pthread_mutex_lock(&jobQueue_lock);
+    while(jobQueue.empty())
+        pthread_cond_wait(&jobQueue_cond, &jobQueue_lock);
+    _job_ = jobQueue.front();
+    jobQueue.pop();
+    pthread_mutex_unlock(&jobQueue_lock);
+    return true;
+}
+ 
+void *thread_pool::threadExecute(void *param)
+{
+    thread_pool *p = (thread_pool *)param;
+    job *oneJob = NULL;
+    while(p->loadJob(oneJob))
+    {
+        if(oneJob)
+            oneJob->working();
+        delete oneJob;
+        oneJob = NULL;
+    }
+}
 
-queue<task*> task_queue;
-int iters, n_thread;
-int *image;
-pthread_mutex_t task_queue_lock = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t task_queue_cond = PTHREAD_COND_INITIALIZER;
 
 int main(int argc, char** argv) {
     /* detect how many CPUs are available */
@@ -58,7 +149,9 @@ int main(int argc, char** argv) {
     assert(image);
 
     n_thread = CPU_COUNT(&cpu_set);
+    thread_pool *myPool = new thread_pool(n_thread);
     pthread_t threads[n_thread];
+    myPool->initThreads(threads);
 
     /* mandelbrot set */
     for (int j = 0; j < height; ++j) {
@@ -66,91 +159,21 @@ int main(int argc, char** argv) {
         for (int i = 0; i < width; ++i) {
             double x0 = i * ((right - left) / width) + left;
             int index = j * width + i;
-            task *new_task = new task(index, x0, y0);
-            task_queue.push(new_task);
+            job *newJob = new job(index, x0, y0);
+            myPool->assignJob(newJob);
+            // image[j * width + i] = color(x0, y0, iters);
         }
     }
 
-
-    for(int i=0; i<n_thread; i++) {
-        pthread_create(&threads[i], NULL, working, NULL);
-        pthread_detach(threads[i]);
+    while(job::finish_num() < height*width) {
+        //cout << job::finish_num() << endl;
+        //cout << "hi" << endl;
     }
 
-    task *new_task = NULL;
-    
-    while(1) {
-        //cout<< "busy" << endl;
-        pthread_mutex_lock(&task_queue_lock);
-        if(!task_queue.empty()) {
-            new_task = task_queue.front();
-            task_queue.pop();
-        }
-        pthread_mutex_unlock(&task_queue_lock);
-        if(new_task != NULL) {
-            image[new_task->index] = color(new_task->x0, new_task->y0, iters);
-            delete new_task;
-            new_task = NULL;
-        }
-        if(task_queue.size() == 0) {
-            cout << task_queue.size() << endl;
-            break;
-        }
-    }
-    //working(NULL);
-    // for(int i=0; i<n_thread; i++) {
-    //     pthread_join(threads[i], NULL);
-    // }
 
     /* draw and cleanup */
     write_png(filename, iters, width, height, image);
     free(image);
-}
-
-void master_working() {
-    task *new_task = NULL;
-    
-    while(1) {
-        //cout<< "busy" << endl;
-        pthread_mutex_lock(&task_queue_lock);
-        if(!task_queue.empty()) {
-            new_task = task_queue.front();
-            task_queue.pop();
-        }
-        pthread_mutex_unlock(&task_queue_lock);
-        if(new_task != NULL) {
-            image[new_task->index] = color(new_task->x0, new_task->y0, iters);
-            delete new_task;
-            new_task = NULL;
-        }
-        if(task_queue.size() == 0) {
-            cout << task_queue.size() << endl;
-            break;
-        }
-    }
-}
-
-void *working(void *data) {
-    task *new_task = NULL;
-    
-    while(1) {
-        //cout<< "busy" << endl;
-        pthread_mutex_lock(&task_queue_lock);
-        if(!task_queue.empty()) {
-            new_task = task_queue.front();
-            task_queue.pop();
-        }
-        pthread_mutex_unlock(&task_queue_lock);
-        if(new_task != NULL) {
-            image[new_task->index] = color(new_task->x0, new_task->y0, iters);
-            delete new_task;
-            new_task = NULL;
-        }
-        if(task_queue.size() == 0) {
-            pthread_exit(NULL);
-            break;
-        }
-    }
 }
 
 int color(double x0, double y0, int iters) {
