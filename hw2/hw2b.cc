@@ -10,8 +10,6 @@
 #include <png.h>
 #include <string.h>
 #include <omp.h>
-#define PNG_NO_SETJMP
-#define MAX_ITER 10000
 
 using namespace std;
 int num_threads;
@@ -75,14 +73,10 @@ int main(int argc, char** argv) {
     int imagesize = width * height;
     int rank, psize, rc;
     rc = MPI_Init(&argc, &argv);
-    if (rc != MPI_SUCCESS) {
-	      printf ("Error starting MPI program. Terminating.\n");
-        MPI_Abort (MPI_COMM_WORLD, rc);
-    }
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &psize);
 
-    int h_each,h_piece;
+    int h_each, h_piece;
     int remainder = 0;
     if(psize >= height){
       h_piece = 1;
@@ -94,7 +88,6 @@ int main(int argc, char** argv) {
      if(remainder >0){
         if(rank < remainder){
             h_each++;
-
         }
       }
     }
@@ -169,10 +162,10 @@ int main(int argc, char** argv) {
         /* draw and cleanup */
         write_png(filename, iters, width, height, ans_image);
         free(ans_image);
-
     }
     free(image);
     free(each_image);
     MPI_Finalize();
+
     return 0;
 }
