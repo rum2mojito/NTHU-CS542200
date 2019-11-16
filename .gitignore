@@ -5,3 +5,5 @@
 *.tar
 */cases/*
 *.png
+*.1
+*.sha256
