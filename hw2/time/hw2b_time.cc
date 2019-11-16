@@ -10,9 +10,27 @@
 #include <png.h>
 #include <string.h>
 #include <omp.h>
+#define PNG_NO_SETJMP
+#define MAX_ITER 10000
 
 using namespace std;
 int num_threads;
+struct timespec startt, endd;
+struct timespec comp_time;
+
+void calc_time(struct timespec* counter, struct timespec start, struct timespec endd) {
+    struct timespec temp;
+      if ((endd.tv_nsec-start.tv_nsec)<0) {
+        temp.tv_sec = endd.tv_sec-start.tv_sec-1;
+        temp.tv_nsec = 1000000000+endd.tv_nsec-start.tv_nsec;
+      } else {
+        temp.tv_sec = endd.tv_sec-start.tv_sec;
+        temp.tv_nsec = endd.tv_nsec-start.tv_nsec;
+      }
+
+    counter->tv_sec += temp.tv_sec;
+    counter->tv_nsec += temp.tv_nsec;
+}
 
 void write_png(const char* filename, int iters, int width, int height, const int* buffer) {
     FILE* fp = fopen(filename, "wb");
@@ -54,7 +72,7 @@ void write_png(const char* filename, int iters, int width, int height, const int
 int main(int argc, char** argv) {
     cpu_set_t cpu_set;
     sched_getaffinity(0, sizeof(cpu_set), &cpu_set);
-    printf("%d cpus available\n", CPU_COUNT(&cpu_set));
+    //printf("%d cpus available\n", CPU_COUNT(&cpu_set));
 
     /* argument parsing */
     assert(argc == 9);
@@ -73,10 +91,19 @@ int main(int argc, char** argv) {
     int imagesize = width * height;
     int rank, psize, rc;
     rc = MPI_Init(&argc, &argv);
+    if (rc != MPI_SUCCESS) {
+	      printf ("Error starting MPI program. Terminating.\n");
+        MPI_Abort (MPI_COMM_WORLD, rc);
+    }
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &psize);
 
-    int h_each, h_piece;
+    comp_time.tv_sec = 0;
+    comp_time.tv_nsec = 0;
+
+    
+
+    int h_each,h_piece;
     int remainder = 0;
     if(psize >= height){
       h_piece = 1;
@@ -88,6 +115,7 @@ int main(int argc, char** argv) {
      if(remainder >0){
         if(rank < remainder){
             h_each++;
+
         }
       }
     }
@@ -95,6 +123,8 @@ int main(int argc, char** argv) {
     /* allocate memory for image */
     int* image;
     int* each_image = (int*)malloc(width * h_each * sizeof(int));
+
+    clock_gettime(CLOCK_MONOTONIC, &startt);
 
     /* mandelbrot set */
     double y_dist = ((upper - lower) / height);
@@ -141,6 +171,12 @@ int main(int argc, char** argv) {
       }
     }
     MPI_Gatherv(each_image,h_each*width,MPI_INT,image,revcount,displs,MPI_INT,0,MPI_COMM_WORLD);
+    clock_gettime(CLOCK_MONOTONIC, &endd);
+    calc_time(&comp_time,startt,endd);
+    double Comp_time_used = comp_time.tv_sec + (double)comp_time.tv_nsec / 1000000000.0;
+    double allComp_time_used;
+    MPI_Reduce(&Comp_time_used, &allComp_time_used, 1,MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+
     if(rank==0){
         /* index handle*/
         int* ans_image = (int*)malloc(imagesize * sizeof(int));
@@ -162,6 +198,17 @@ int main(int argc, char** argv) {
         /* draw and cleanup */
         write_png(filename, iters, width, height, ans_image);
         free(ans_image);
+
+    }
+    if(rank==0){
+      if(psize <= height){
+        allComp_time_used = allComp_time_used / psize;
+      }
+      else{
+        allComp_time_used = allComp_time_used / height;
+      }
+      cout<<"Psize : " <<psize<<"\n";
+      cout<<"Computing : "<<allComp_time_used<<"\n";
     }
     free(image);
     free(each_image);

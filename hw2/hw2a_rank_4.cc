@@ -17,17 +17,30 @@
 using namespace std;
 
 void write_png(const char* filename, int iters, int width, int height, const int* buffer);
-void color(int height);
+int color(double x0, double y0, int iters);
 void *working(void *data);
 bool check_all_done();
 
-int iters, n_thread, n_task_packet, current, task_size, _height, _width;
+struct task{
+    int index;
+    double x0;
+    double y0;
+    int height;
+
+    task(int height1, int index1=0, double x01=0, double y01=0) {
+        index = index1;
+        x0 = x01;
+        y0 = y01;
+        height = height1;
+    }
+};
+
+queue<task*> task_queue;
+vector<task*> task_list;
+int iters, n_thread, n_task_packet, current, task_size;
 int *image;
 int *work_done;
-int done = 0;
-double _lower, _upper, _left, _right;
 pthread_mutex_t task_queue_lock = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t work_done_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t task_queue_cond = PTHREAD_COND_INITIALIZER;
 
 int BATCH_SIZE=500;
@@ -42,15 +55,15 @@ int main(int argc, char** argv) {
     assert(argc == 9);
     const char* filename = argv[1];
     iters = strtol(argv[2], 0, 10);
-    _left = strtod(argv[3], 0);
-    _right = strtod(argv[4], 0);
-    _lower = strtod(argv[5], 0);
-    _upper = strtod(argv[6], 0);
-    _width = strtol(argv[7], 0, 10);
-    _height = strtol(argv[8], 0, 10);
+    double left = strtod(argv[3], 0);
+    double right = strtod(argv[4], 0);
+    double lower = strtod(argv[5], 0);
+    double upper = strtod(argv[6], 0);
+    int width = strtol(argv[7], 0, 10);
+    int height = strtol(argv[8], 0, 10);
 
     /* allocate memory for image */
-    image = (int*)malloc(_width * _height * sizeof(int));
+    image = (int*)malloc(width * height * sizeof(int));
     assert(image);
 
     work_done = (int*)malloc(n_thread * sizeof(int));
@@ -62,109 +75,126 @@ int main(int argc, char** argv) {
     n_thread = CPU_COUNT(&cpu_set);
     pthread_t threads[n_thread];
 
+    /* mandelbrot set */
+    for (int j = 0; j < height; ++j) {
+        double y0 = j * ((upper - lower) / height) + lower;
+        for (int i = 0; i < width; ++i) {
+            double x0 = i * ((right - left) / width) + left;
+            int index = j * width + i;
+            task *new_task = new task(index, x0, y0);
+            task_list.push_back(new_task);
+        }
+    }
+    shuffle(task_list.begin(), task_list.end(), default_random_engine(0));
+    task_size = task_list.size();
+
+
     for(int i=0; i<n_thread; i++) {
-        //cout << i << endl;
         pthread_create(&threads[i], NULL, working, new int(i));
         pthread_detach(threads[i]);
     }
-    
+
+    task *new_task1 = NULL;
     int start=0, end=0;
     
     while(1) {
         //cout<< "busy" << endl;
         pthread_mutex_lock(&task_queue_lock);
-        if(current < _height) {
-            start = current;
-            current += 1;
-        } else {
-            start = current;
+        if(current < task_size) {
+            if(task_size-current > BATCH_SIZE) {
+                start = current;
+                end = current+BATCH_SIZE;
+                current += BATCH_SIZE;
+            } else {
+                start = current;
+                end = task_size;
+                current = task_size;
+            }
         }
         pthread_mutex_unlock(&task_queue_lock);
-        //cout << start << endl;
-        if(start < _height) {
-            color(start);
+
+        for(int i=start; i<end; i++) {
+            new_task1 = task_list[i];
+            if(new_task1 != NULL) {
+                image[new_task1->index] = color(new_task1->x0, new_task1->y0, iters);
+                //delete new_task;
+                new_task1 = NULL;
+            }
         }
 
-        if(start == _height) {
+        if(current == task_size) {
             break;
         }
     }
-
     while(!check_all_done()) {
         //cout << "wait" << endl;
     }
 
     /* draw and cleanup */
-    write_png(filename, iters, _width, _height, image);
+    write_png(filename, iters, width, height, image);
     free(image);
 }
 
 bool check_all_done() {
-    // for(int i=0; i<n_thread; i++) {
-    //     if(work_done[i] != 1) {
-    //         //cout << "worker id: "<< i << endl;
-    //         return false;
-    //     }
-    // }
-    cout << done << endl;
-    if(done != n_thread) return false;
+    for(int i=0; i<n_thread; i++) {
+        if(work_done[i] != 1) return false;
+    }
     return true;
 }
 
 void *working(void *_id) {
     int *id = (int*) _id;
+    //cout << *id << endl;
+    task *new_task = NULL;
     int start=0, end=0;
-
-    // cout << "worker id: "<< *id << endl;
     
     while(1) {
         //cout<< "busy" << endl;
         pthread_mutex_lock(&task_queue_lock);
-        if(current < _height) {
-            start = current;
-            current += 1;
-        } else {
-            start = current;
+        if(current < task_size) {
+            if(task_size-current > BATCH_SIZE) {
+                start = current;
+                end = current+BATCH_SIZE;
+                current += BATCH_SIZE;
+            } else {
+                start = current;
+                end = task_size;
+                current = task_size;
+            }
         }
         pthread_mutex_unlock(&task_queue_lock);
-        //cout << start << endl;
-        if(start < _height) {
-            color(start);
+
+        for(int i=start; i<end; i++) {
+            new_task = task_list[i];
+            if(new_task != NULL) {
+                image[new_task->index] = color(new_task->x0, new_task->y0, iters);
+                //delete new_task;
+                new_task = NULL;
+            }
         }
 
-        if(start == _height) {
-            //work_done[*id] = 1;
-            //cout << "worker id: "<< *id << endl;
-            pthread_mutex_lock(&task_queue_lock);
-            done += 1;
-            pthread_mutex_unlock(&task_queue_lock);
+        if(current == task_size) {
+            work_done[*id] = 1;
             pthread_exit(NULL);
             break;
         }
     }
 }
 
-void color(int height) {
-    int j = height;
-    double y0 = j * ((_upper - _lower) / _height) + _lower;
-    for (int i = 0; i < _width; ++i) {
-        double x0 = i * ((_right - _left) / _width) + _left;
-
-        int repeats = 0;
-        double x = 0;
-        double y = 0;
-        double length_squared = 0;
-        while (repeats < iters && length_squared < 4) {
-            double temp = x * x - y * y + x0;
-            y = 2 * x * y + y0;
-            x = temp;
-            length_squared = x * x + y * y;
-            ++repeats;
-        }
-        image[j * _width + i] = repeats;
-        //cout << repeats << endl;
+int color(double x0, double y0, int iters) {
+    int repeats = 0;
+    double x = 0;
+    double y = 0;
+    double length_squared = 0;
+    while (repeats < iters && length_squared < 4) {
+        double temp = x * x - y * y + x0;
+        y = 2 * x * y + y0;
+        x = temp;
+        length_squared = x * x + y * y;
+        ++repeats;
     }
-    
+
+    return repeats;
 }
 
 void write_png(const char* filename, int iters, int width, int height, const int* buffer) {
