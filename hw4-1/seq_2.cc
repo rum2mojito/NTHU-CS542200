@@ -1,5 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <iostream>
+
+using namespace std;
 
 const int INF = ((1 << 30) - 1);
 const int V = 50010;
@@ -49,8 +52,10 @@ void output(char* outFileName) {
     for (int i = 0; i < n; ++i) {
         for (int j = 0; j < n; ++j) {
             if (Dist[i][j] >= INF) Dist[i][j] = INF;
+            cout << Dist[i][j] << '\t';
         }
         fwrite(Dist[i], sizeof(int), n, outfile);
+        cout << endl;
     }
     fclose(outfile);
 }
